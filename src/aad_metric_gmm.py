@@ -520,18 +520,10 @@ def run_aad_interleaving(args, features, labels, gmms):
     
 #     return gmms, num_anomalies_queried, num_anomalies_queried_list, queried_indices
 
-@njit
 def calc_anomaly_scores(features, A_t, mean_vec):
-    dists = []
-    for i in range(features.shape[0]):
-        #v = np.expand_dims(features[i, :], 1)
-        v = features[i, :]
-
-        #curr_dist = np.sqrt(my_mahal_squared(mean_vec, v, A_t)[0][0])
-        curr_dist = mahalanobis_fast_uv(v, mean_vec, A_t)
-        dists.append(curr_dist)
-
-    return np.array(dists)
+    # Batched Mahalanobis distances: one matrix product instead of a per-row loop (same values).
+    diff = np.asarray(features, dtype=np.float64) - mean_vec
+    return np.sqrt(np.einsum('ij,ij->i', diff @ A_t, diff))
 
 def compute_pre_recall_f1(target, score):
     normal_ratio = (target == 0).sum() / len(target)
