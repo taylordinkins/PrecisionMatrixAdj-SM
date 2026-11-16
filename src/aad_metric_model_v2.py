@@ -94,13 +94,10 @@ class AADMetricModel:
                 #w = self.optimize_w_psd_projected(x_i=u_point, mu_X=mu, A_t_minus1=self.curr_dist_mat, Z_t=curr_Z, v=self.v, p=self.data.shape[1], y=1, a=self.a, lr=1e-2, steps=1000, return_logs=False)
 
                 # w = optimize_w_psd_projected_softplus(x_i=u_point, mu_X=mu, A_t_minus1=self.curr_dist_mat, Z_t=curr_Z, v=self.v, p=self.data.shape[1], y=1, a=self.a, lr=1e-1, steps=25)
-                z = np.linalg.svd(curr_Z)[0][:, 0]  # Take the first eigenvector of Z_t
                 u = delta
-                A_inv = np.linalg.inv(self.curr_dist_mat)
-                M = (z[:, None] * A_inv) * z[None, :]
                 Q = (u[:, None] * curr_Z) * u[None, :]
                 # w = optimize_w_psd_projected_softplus(x_i=u_point, mu_X=mu, A_t_minus1=self.curr_dist_mat, A_inv=A_inv, z=z, Z_t=curr_Z, v=self.v, p=self.data.shape[1], y=1, a=self.a, lr=1e-2, steps=1000)
-                w = optimize_w_fast(x_i=u_point, mu_X=mu, A_inv=A_inv, Z_t=curr_Z, M=M, Q=Q, v=self.v, p=self.data.shape[1], y=1, a=2.0, lr=1e-1, steps=20, A_t=self.curr_dist_mat)
+                w = optimize_w_fast(x_i=u_point, mu_X=mu, A_t=self.curr_dist_mat, Z_t=curr_Z, M=np.zeros_like(curr_Z), Q=Q, v=self.v, p=self.data.shape[1], y=1, a=2.0, lr=1e-1, steps=20)
                 # w_norm = 2 * (w - w.min()) / (w.max() - w.min()) - 1
 
                 #w = self.optimize_logcosh(u=delta, Z_t=curr_Z, a=self.a, beta=0.5, lr=0.01, steps=1000, verbose=False)
@@ -607,18 +604,10 @@ class AADMetricModel:
 
 
 
-@njit
 def calc_anomaly_scores(features, A_t, mean_vec):
-    dists = []
-    for i in range(features.shape[0]):
-        #v = np.expand_dims(features[i, :], 1)
-        v = features[i, :]
-
-        #curr_dist = np.sqrt(my_mahal_squared(mean_vec, v, A_t)[0][0])
-        curr_dist = mahalanobis_fast_uv(v, mean_vec, A_t)
-        dists.append(curr_dist)
-
-    return np.array(dists)
+    # Batched Mahalanobis distances: one matrix product instead of a per-row loop (same values).
+    diff = np.asarray(features, dtype=np.float64) - mean_vec
+    return np.sqrt(np.einsum('ij,ij->i', diff @ A_t, diff))
 
 @njit
 def calc_anomaly_scores_squared(features, A_t, mean_vec):
@@ -721,10 +710,10 @@ def optimize_w_psd_projected_softplus(
     return w
 
 @njit
-def optimize_w_fast(x_i, mu_X, A_inv, Z_t, M, Q, v, p, y, a=2.0, lr=1e-2, steps=100, A_t=None):
-    # Fix: the deviation and trace penalty use the precision matrix A_t (eq. 1, eq. 9), not A_inv;
-    # tr(diag(w) Z diag(w)) = w^T diag(Z) w. A_inv is still the right matrix for the PSD bound M.
-    A_t = np.linalg.inv(A_inv) if A_t is None else A_t
+def optimize_w_fast(x_i, mu_X, A_t, Z_t, M, Q, v, p, y, a=2.0, lr=1e-2, steps=100):
+    # The deviation and trace penalty use the precision matrix A_t (eq. 1, eq. 9);
+    # tr(diag(w) Z diag(w)) = w^T diag(Z) w. M = (z z^T) o A^-1 is the PSD bound for the
+    # elementwise nominal update (eq. 7) and is only read when y == 0; anomaly calls pass zeros.
     dZ = np.diag(Z_t).copy()
     u = x_i - mu_X
     d0 = u @ A_t @ u
@@ -733,7 +722,6 @@ def optimize_w_fast(x_i, mu_X, A_inv, Z_t, M, Q, v, p, y, a=2.0, lr=1e-2, steps=
     init_loss = 0
     for j in range(steps):
         Qw = Q @ w
-        Zw = Z_t @ w
         quad = w @ Qw
         trace_quad = w @ (dZ * w)
         
