@@ -2,7 +2,7 @@
 
 ## Updates in this fork
 
-This is a copy of the [original PMA repository](https://github.com/taylordinkins/PrecisionMatrixAdjustments) with two changes. Everything else is unchanged, and the original commands below still reproduce the paper's numbers.
+This is a copy of the [original PMA repository](https://github.com/taylordinkins/PrecisionMatrixAdjustments) with the changes below. Everything else is unchanged, and the original commands below still reproduce the paper's numbers.
 
 1. **Optimizer fix (always on).** `optimize_w_fast` (the anomaly update, in `aad_metric_model_v2.py` and `aad_metric_model_gmm.py`) now computes the deviation with the precision matrix A, as in Eq. 1, instead of its inverse, and uses the correct trace of diag(w) Z diag(w) in the penalty. On the datasets we reran, this gives the same results as the paper: queried anomalies are far past the threshold, so the loss gradient is near zero either way.
 2. **Sherman–Morrison nominal update (opt-in).** `--sm_nominal` replaces the nominal update, which subtracts at most the smallest eigenvalue and so barely moves scores after the first nominal label, with A ← A − η A u uᵀ A / (1 + η uᵀ A u). Here η brings the labeled point's score toward the median score under the starting matrix, damped by `--sm_alpha` (default 0.5). A stays positive definite without a cap.
@@ -11,10 +11,15 @@ This is a copy of the [original PMA repository](https://github.com/taylordinkins
 python src/aad_metric.py --data_path "$data_path" --data msl --iters 50 --k 3 --v 1e-7 --original_mu --nom_deweight --conserv_thresh 50 --true_feedback --full_k --v2 --sm_nominal --save_suffix v2_nominal_sm
 ```
 
-The flag works the same way for `aad_metric_gmm.py` (PMA-MGE). `src/aad_metric_model.py` is a placeholder for the unused V1 model so the scripts import, and the empty `figures/` and `results_runtimes/` folders are folders the scripts write to.
+The flag works the same way for `aad_metric_gmm.py` (PMA-MGE).
 
+3. **Faster scoring and anomaly updates (always on).** Anomaly scores are computed with one batched matrix product instead of a per-point loop, and the anomaly update no longer computes an SVD and a matrix inverse whose results it never uses. Results are identical to the version without this change; the update loop runs about 2–3× faster on 512-dimensional data, so runtimes from this version differ from those reported in the paper.
 
-This repository contains the code for the paper **"Incorporating Interactive User Feedback through Precision Matrix Adjustments for High-Dimensional Anomaly Detection"**, currently in review at ICDM 2025.
+`src/aad_metric_model.py` is a placeholder for the unused V1 model so the scripts import, and the empty `figures/`, `results_runtimes/`, `results_kmeans_reduced/` and `results_gmms_seeds/` folders are folders the scripts write to.
+
+---
+
+This repository contains the code for the paper **"Incorporating Interactive User Feedback through Precision Matrix Adjustments for High-Dimensional Anomaly Detection"**, published and presented at ICDM 2025.
 
 ## To Collect the Results from the Paper
 
