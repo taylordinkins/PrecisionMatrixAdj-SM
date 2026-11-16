@@ -2,7 +2,7 @@
 
 ## Updates in this fork
 
-This is a copy of the [original PMA repository](https://github.com/spaceonion1001/PrecisionMatrixAdj) with two changes. Everything else is unchanged, and the original commands below still reproduce the paper's numbers.
+This is a copy of the [original PMA repository](https://github.com/taylordinkins/PrecisionMatrixAdjustments) with two changes. Everything else is unchanged, and the original commands below still reproduce the paper's numbers.
 
 1. **Optimizer fix (always on).** `optimize_w_fast` (the anomaly update, in `aad_metric_model_v2.py` and `aad_metric_model_gmm.py`) now computes the deviation with the precision matrix A, as in Eq. 1, instead of its inverse, and uses the correct trace of diag(w) Z diag(w) in the penalty. On the datasets we reran, this gives the same results as the paper: queried anomalies are far past the threshold, so the loss gradient is near zero either way.
 2. **Sherman–Morrison nominal update (opt-in).** `--sm_nominal` replaces the nominal update, which subtracts at most the smallest eigenvalue and so barely moves scores after the first nominal label, with A ← A − η A u uᵀ A / (1 + η uᵀ A u). Here η brings the labeled point's score toward the median score under the starting matrix, damped by `--sm_alpha` (default 0.5). A stays positive definite without a cap.
