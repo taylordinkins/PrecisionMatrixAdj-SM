@@ -87,7 +87,7 @@ class AADMetricModel:
                 M = (z[:, None] * A_inv) * z[None, :]
                 Q = (u[:, None] * curr_Z) * u[None, :]
                 # w = optimize_w_psd_projected_softplus(x_i=u_point, mu_X=mu, A_t_minus1=self.curr_dist_mat, A_inv=A_inv, z=z, Z_t=curr_Z, v=self.v, p=self.data.shape[1], y=1, a=self.a, lr=1e-2, steps=1000)
-                w = optimize_w_fast(x_i=u_point, mu_X=mu, A_inv=A_inv, Z_t=curr_Z, M=M, Q=Q, v=self.v, p=self.data.shape[1], y=1, a=2.0, lr=1e-1, steps=20)
+                w = optimize_w_fast(x_i=u_point, mu_X=mu, A_inv=A_inv, Z_t=curr_Z, M=M, Q=Q, v=self.v, p=self.data.shape[1], y=1, a=2.0, lr=1e-1, steps=20, A_t=self.curr_dist_mat)
                 A_t = self.curr_dist_mat + np.diag(w) @ curr_Z @ np.diag(w)
                 w_s.append(w)
                 Z_s.append(curr_Z)
@@ -129,7 +129,7 @@ class AADMetricModel:
             M = (z[:, None] * A_inv) * z[None, :]
             Q = (u[:, None] * curr_Z) * u[None, :]
             # w = optimize_w_psd_projected_softplus(x_i=u_point, mu_X=mu, A_t_minus1=self.curr_dist_mat, A_inv=A_inv, z=z, Z_t=curr_Z, v=self.v, p=self.data.shape[1], y=1, a=self.a, lr=1e-2, steps=1000)
-            w = optimize_w_fast(x_i=u_point, mu_X=self.mu, A_inv=A_inv, Z_t=curr_Z, M=M, Q=Q, v=self.v, p=self.data.shape[1], y=1, a=2.0, lr=1e-1, steps=20)
+            w = optimize_w_fast(x_i=u_point, mu_X=self.mu, A_inv=A_inv, Z_t=curr_Z, M=M, Q=Q, v=self.v, p=self.data.shape[1], y=1, a=2.0, lr=1e-1, steps=20, A_t=self.curr_dist_mat)
             # w = optimize_w_psd_projected_softplus(x_i=u_point, mu_X=self.mu, A_t_minus1=self.curr_dist_mat, Z_t=curr_Z, v=self.v, p=self.data.shape[1], y=1, a=self.a, lr=1e-1, steps=20)
             A_t = self.curr_dist_mat + np.diag(w) @ curr_Z @ np.diag(w)
             # w_s.append(w)
@@ -345,6 +345,21 @@ class AADMetricModel:
 
 
     
+    def sherman_morrison_nominal(self, diff, mean):
+        # Sherman-Morrison benign update: A <- A - eta * A u u^T A / (1 + eta * u^T A u), with u = x - mean.
+        # eta brings the labeled point's score u^T A u down towards m, the median score of all points under
+        # the starting matrix, damped by --sm_alpha; no update if the point already scores at or below m.
+        # A stays positive definite for any eta >= 0, so no eigenvalue cap is needed.
+        if getattr(self, 'sm_target', None) is None:
+            U0 = self.original_data - mean
+            self.sm_target = float(np.median(np.einsum('ij,jk,ik->i', U0, self.init_dist_mat, U0)))
+        q = float(diff @ self.curr_dist_mat @ diff)
+        if q <= self.sm_target:
+            return self.curr_dist_mat
+        eta = self.args.sm_alpha * (q / self.sm_target - 1.0) / q
+        Au = self.curr_dist_mat @ diff
+        return self.curr_dist_mat - eta * np.outer(Au, Au) / (1.0 + eta * q)
+
     def deweight_features(self, u_point, mean):
         diff = u_point - mean
         mahal_grad = self.curr_dist_mat @ diff
@@ -372,7 +387,10 @@ class AADMetricModel:
             L = np.diag(np.sqrt(eigvals)) @ eigvecs.T
             v_whitened = L @ diff
             v_whitened_unit = v_whitened / np.linalg.norm(v_whitened)
-            self.curr_dist_mat = w_precision_update(self.curr_dist_mat, top_k_idx, direction_vector=diff)
+            if getattr(self.args, 'sm_nominal', False):
+                self.curr_dist_mat = self.sherman_morrison_nominal(diff, mean)
+            else:
+                self.curr_dist_mat = w_precision_update(self.curr_dist_mat, top_k_idx, direction_vector=diff)
             #self.curr_dist_mat = w_precision_update(self.curr_dist_mat, top_k_idx, direction_vector=v_whitened_unit)
 
 
@@ -490,9 +508,13 @@ def stable_sigmoid(x):
 #     return w
 
 @njit
-def optimize_w_fast(x_i, mu_X, A_inv, Z_t, M, Q, v, p, y, a=2.0, lr=1e-2, steps=100):
+def optimize_w_fast(x_i, mu_X, A_inv, Z_t, M, Q, v, p, y, a=2.0, lr=1e-2, steps=100, A_t=None):
+    # Fix: the deviation and trace penalty use the precision matrix A_t (eq. 1, eq. 9), not A_inv;
+    # tr(diag(w) Z diag(w)) = w^T diag(Z) w. A_inv is still the right matrix for the PSD bound M.
+    A_t = np.linalg.inv(A_inv) if A_t is None else A_t
+    dZ = np.diag(Z_t).copy()
     u = x_i - mu_X
-    d0 = u @ A_inv @ u
+    d0 = u @ A_t @ u
     w = np.ones(p) if y == 1 else np.random.randn(p) * 0.01
     sqrt_2p = np.sqrt(2 * p)
 
@@ -500,25 +522,25 @@ def optimize_w_fast(x_i, mu_X, A_inv, Z_t, M, Q, v, p, y, a=2.0, lr=1e-2, steps=
         Qw = Q @ w
         Zw = Z_t @ w
         quad = w @ Qw
-        trace_quad = w @ Zw
+        trace_quad = w @ (dZ * w)
 
         if y == 0:
             d = d0 - quad
-            trace_val = np.trace(A_inv) - trace_quad
+            trace_val = np.trace(A_t) - trace_quad
             dev = (d - p) / sqrt_2p
             # loss = np.abs(dev) + v * trace_val
             grad_dev = -2 * Qw / sqrt_2p
-            grad_trace = -2 * Zw
+            grad_trace = -2 * dZ * w
             grad_loss = np.sign(dev) * grad_dev + v * grad_trace
         else:
             d = d0 + quad
-            trace_val = np.trace(A_inv) + trace_quad
+            trace_val = np.trace(A_t) + trace_quad
             dev = (d - p) / sqrt_2p
             # loss = np.log1p(np.exp(a - dev)) + v * trace_val
             # sigmoid = 1 / (1 + np.exp(-(a - dev)))  # or use expit
             sigmoid = expit(a - dev)
             grad_dev = +2 * Qw / sqrt_2p
-            grad_trace = +2 * Zw
+            grad_trace = +2 * dZ * w
             grad_loss = -sigmoid * grad_dev + v * grad_trace
 
         w -= lr * grad_loss

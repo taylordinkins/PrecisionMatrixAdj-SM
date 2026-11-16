@@ -96,6 +96,8 @@ def parse_arguments():
     parser.add_argument('--prime_limit', type=int, default=10)
     parser.add_argument('--use_mahal', action='store_true')
     parser.add_argument('--nom_deweight', action='store_true')
+    parser.add_argument('--sm_nominal', action='store_true', help='Sherman-Morrison update for nominal labels')
+    parser.add_argument('--sm_alpha', type=float, default=0.5, help='damping for --sm_nominal')
     parser.add_argument('--selection_thresh', type=int, default=99)
     parser.add_argument('--v2', action='store_true')
     parser.add_argument('--interleaving', action='store_true')
